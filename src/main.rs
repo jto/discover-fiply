@@ -76,7 +76,7 @@ fn find_tracks_ids(spotify: &Spotify, items: Vec<fip_client::TimelineItem>) -> V
         log::debug!("Search result: {:?}", track);
         for f in &track.tracks.items.first() {
             for id in &f.id {
-                ids.push(id.clone());
+                ids.push(format!("spotify:track:{}", id));
             }
         }
     }
@@ -87,7 +87,7 @@ fn update_playlist(spotify: &Spotify, tracks: Vec<String>) {
     log::info!("Updating playlist with tracks: {:?}", tracks);
 
     let user_id = "KZ-2BPJ0Tum-W8n2kB5d8A";
-    let mut playlist_id = String::from("4Qghjo06iuI9rhqtzE4Ved?si=QJhqsgPxSwybqYVWEBvRQg");
+    let mut playlist_id = String::from("4Qghjo06iuI9rhqtzE4Ved");
     let playlist = spotify
         .user_playlist(user_id, Some(&mut playlist_id), None, None)
         .unwrap();
@@ -95,16 +95,15 @@ fn update_playlist(spotify: &Spotify, tracks: Vec<String>) {
     log::debug!("Found playlist {:?}", playlist);
 
     spotify
-        .user_playlist_add_tracks(user_id, playlist_id.as_str(), tracks.as_slice(), None)
+        .user_playlist_replace_tracks(user_id, playlist_id.as_str(), tracks.as_slice())
         .unwrap();
 }
 
 fn main() {
     env_logger::init();
     let oneh = 60 * 60; // 1 hour
-    let d = Duration::from_secs(oneh * 1);
-    let mut songs = fetch_last_songs(d);
-    songs.truncate(10);
+    let d = Duration::from_secs(oneh * 24);
+    let songs = fetch_last_songs(d);
     let spotify = spotify_create_client();
     let tracks = find_tracks_ids(&spotify, songs);
     update_playlist(&spotify, tracks);
