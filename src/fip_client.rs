@@ -3,7 +3,7 @@ use serde_json::json;
 use serde_json::value::Value;
 use std::time::SystemTime;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct TimelineItem {
   pub album: String,
   pub subtitle: String,

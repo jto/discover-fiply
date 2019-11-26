@@ -1,15 +1,15 @@
 pub mod fip_client;
-use std::time::{Duration, SystemTime};
-
+use fip_client::TimelineItem;
 use rspotify::spotify::client::Spotify;
 use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
 use rspotify::spotify::util::get_token;
+use std::time::{Duration, SystemTime};
 
-pub fn fetch_last_songs(dur: Duration) -> Vec<fip_client::TimelineItem> {
+pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
     let from = SystemTime::now();
     let mut current = from.duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let until = current - dur;
-    let mut res: Vec<fip_client::TimelineItem> = Vec::new();
+    let mut res: Vec<TimelineItem> = Vec::new();
     let max_pages = 2;
     let mut itrs = 0;
     loop {
@@ -34,16 +34,37 @@ pub fn fetch_last_songs(dur: Duration) -> Vec<fip_client::TimelineItem> {
         }
         itrs = itrs + 1;
     }
-    res.dedup_by(|a, b| a.subtitle == b.subtitle);
     res
 }
 
-fn spotify_create_client() -> Spotify {
-    // Set client_id and client_secret in .env file or
-    // export CLIENT_ID="your client_id"
-    // export CLIENT_SECRET="secret"
-    // export REDIRECT_URI=your-direct-uri
+///
+/// Get the topN most popular songs
+/// Popularity is the number of time occurs in {songs}
+///
+fn get_most_popular(songs: &mut Vec<TimelineItem>, limit: usize) -> Vec<TimelineItem> {
+    songs.sort_by(|a, b| a.subtitle.cmp(&b.subtitle));
+    let mut counted: Vec<(TimelineItem, u16)> = vec![];
+    let mut last_seen = songs.pop().unwrap();
+    let mut count = 1;
+    for s in songs {
+        if s.subtitle == last_seen.subtitle {
+            count = count + 1;
+        } else {
+            counted.push((last_seen, count));
+            last_seen = (*s).clone();
+            count = 1;
+        }
+    }
+    counted.sort_by_key(|p| p.1); // sort by most popular song
+    let result: Vec<(TimelineItem, u16)> = counted.into_iter().rev().take(limit).collect();
+    for p in &result {
+        log::info!("- {} was played {} times", p.0.subtitle, p.1);
+    }
+    result.into_iter().map(|p| p.0).collect()
+}
 
+fn spotify_create_client() -> Spotify {
+    // Set client_id and client_secret in .env
     let mut oauth = SpotifyOAuth::default()
         .scope("playlist-modify-private playlist-modify-public")
         .build();
@@ -67,7 +88,7 @@ fn spotify_create_client() -> Spotify {
 ///
 /// Find the spotify track IDS for each TimelineItem
 ///
-fn find_tracks_ids(spotify: &Spotify, items: Vec<fip_client::TimelineItem>) -> Vec<String> {
+fn find_tracks_ids(spotify: &Spotify, items: Vec<TimelineItem>) -> Vec<String> {
     let mut ids: Vec<String> = vec![];
     for t in &items {
         let q = format!("track:{} album:{}", &t.subtitle, &t.album);
@@ -101,10 +122,11 @@ fn update_playlist(spotify: &Spotify, tracks: Vec<String>) {
 
 fn main() {
     env_logger::init();
-    let oneh = 60 * 60; // 1 hour
-    let d = Duration::from_secs(oneh * 24);
-    let songs = fetch_last_songs(d);
+    let a_day = 60 * 60 * 24;
+    let d = Duration::from_secs(a_day * 7);
+    let mut songs = fetch_last_songs(d);
+    let populars = get_most_popular(songs.as_mut(), 100);
     let spotify = spotify_create_client();
-    let tracks = find_tracks_ids(&spotify, songs);
+    let tracks = find_tracks_ids(&spotify, populars);
     update_playlist(&spotify, tracks);
 }
