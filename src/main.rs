@@ -10,7 +10,14 @@ use retry::{delay, retry};
 const USER_ID: &str = "KZ-2BPJ0Tum-W8n2kB5d8A";
 const DISCOVER_FIPLY_PLAYLIST: &str = "4Qghjo06iuI9rhqtzE4Ved";
 
-pub fn fetch_last_songs(dur: Duration, delay: Duration) -> Vec<TimelineItem> {
+#[derive(Debug)]
+struct TrackMetadata {
+    spotify_id: String,
+    spotify_popularity: u32,
+    fip_occ: u8,
+}
+
+pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
     let from = SystemTime::now();
     let mut current = from.duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let until = current - dur;
@@ -49,16 +56,12 @@ pub fn fetch_last_songs(dur: Duration, delay: Duration) -> Vec<TimelineItem> {
 }
 
 ///
-/// Get the topN most popular songs
-/// Popularity is the number of time occurs in {songs}
+/// Count the number of occurene of each song and sort.
+/// The most played songs are fist
 ///
-fn get_most_popular(songs: &mut Vec<TimelineItem>, limit: usize) -> Vec<TimelineItem> {
-    log::info!(
-        "Getting the most popular songs in a list of {}",
-        songs.len()
-    );
+fn count_occurences(songs: &mut Vec<TimelineItem>) -> Vec<(TimelineItem, u8)> {
     songs.sort_by(|a, b| a.subtitle.cmp(&b.subtitle));
-    let mut counted: Vec<(TimelineItem, u16)> = vec![];
+    let mut counted: Vec<(TimelineItem, u8)> = vec![];
     let mut last_seen = songs.pop().unwrap();
     let mut count = 1;
     for s in songs {
@@ -70,12 +73,8 @@ fn get_most_popular(songs: &mut Vec<TimelineItem>, limit: usize) -> Vec<Timeline
             count = 1;
         }
     }
-    counted.sort_by_key(|p| p.1); // sort by most popular song
-    let result: Vec<(TimelineItem, u16)> = counted.into_iter().rev().take(limit).collect();
-    for p in &result {
-        log::info!("- {} was played {} times", p.0.subtitle, p.1);
-    }
-    result.into_iter().map(|p| p.0).collect()
+    counted.sort_by_key(|p| p.1);
+    counted.into_iter().rev().collect() // sort by number of plays (most played first)
 }
 
 fn spotify_create_client() -> Spotify {
@@ -103,9 +102,14 @@ fn spotify_create_client() -> Spotify {
 ///
 /// Find the spotify track IDS for each TimelineItem
 ///
-fn find_tracks_ids(spotify: &Spotify, items: Vec<TimelineItem>) -> Vec<String> {
-    let mut ids: Vec<String> = vec![];
-    for t in &items {
+fn find_tracks_metadata(
+    spotify: &Spotify,
+    items: Vec<(TimelineItem, u8)>,
+    delay: &Duration,
+) -> Vec<(TimelineItem, TrackMetadata)> {
+    let mut metas: Vec<(TimelineItem, TrackMetadata)> = vec![];
+
+    for (t, c) in &items {
         let q = format!(
             "track:{} artist:{}",
             &t.subtitle,
@@ -114,20 +118,30 @@ fn find_tracks_ids(spotify: &Spotify, items: Vec<TimelineItem>) -> Vec<String> {
         log::debug!("Searching for track: {:?} with query {}", t, q);
         let track = spotify.search_track(&q, 1, 0, None).unwrap();
         log::debug!("Search result: {:?}", track);
+
         for f in &track.tracks.items.first() {
-            for id in &f.id {
-                ids.push(format!("spotify:track:{}", id));
+            if let Some(id) = &f.id {
+                let m = TrackMetadata {
+                    spotify_id: format!("spotify:track:{}", id),
+                    spotify_popularity: f.popularity,
+                    fip_occ: *c,
+                };
+                metas.push((t.clone(), m));
             }
         }
+        std::thread::sleep(*delay); // avoid the spotify API rate limit
     }
-    ids
+    metas
 }
 
-fn update_playlist(spotify: &Spotify, tracks: Vec<String>) {
-    log::info!("Updating playlist with tracks: {:?}", tracks);
-    let mut playlist_id = String::from(DISCOVER_FIPLY_PLAYLIST);
+fn update_playlist(spotify: &Spotify, playlist_id: &mut String, tracks: Vec<String>) {
+    log::info!(
+        "Updating playlist {} with tracks: {:?}",
+        playlist_id,
+        tracks
+    );
     let playlist = spotify
-        .user_playlist(USER_ID, Some(&mut playlist_id), None, None)
+        .user_playlist(USER_ID, Some(playlist_id), None, None)
         .unwrap();
 
     log::debug!("Found playlist {:?}", playlist);
@@ -141,13 +155,24 @@ fn main() {
     env_logger::init();
     let a_day = 60 * 60 * 24;
     let d = Duration::from_secs(a_day * 7);
-    let delay = Duration::from_millis(500);
-    let mut songs = fetch_last_songs(d, delay);
-    let populars = get_most_popular(songs.as_mut(), 125);
+    let delay = Duration::from_millis(200);
+    let mut songs = fetch_last_songs(d);
+    let counted = count_occurences(songs.as_mut());
     let spotify = spotify_create_client();
-    let tracks: Vec<String> = find_tracks_ids(&spotify, populars)
+    let mut popular_tracks_meta =
+        find_tracks_metadata(&spotify, counted.into_iter().take(150).collect(), &delay);
+
+    popular_tracks_meta.sort_by_key(|i| (i.1.fip_occ, i.1.spotify_popularity));
+
+    let most_aired_tracks_ids = popular_tracks_meta
         .into_iter()
         .take(100)
+        .map(|i| i.1.spotify_id)
         .collect();
-    update_playlist(&spotify, tracks);
+
+    update_playlist(
+        &spotify,
+        &mut String::from(DISCOVER_FIPLY_PLAYLIST),
+        most_aired_tracks_ids,
+    );
 }
