@@ -34,49 +34,78 @@ pub fn fetch_last_songs(dur: Duration) -> Vec<fip_client::TimelineItem> {
         }
         itrs = itrs + 1;
     }
+    res.dedup_by(|a, b| a.subtitle == b.subtitle);
     res
 }
 
-fn update_playlist() {
-    log::info!("Updating playlist");
-
+fn spotify_create_client() -> Spotify {
     // Set client_id and client_secret in .env file or
     // export CLIENT_ID="your client_id"
     // export CLIENT_SECRET="secret"
     // export REDIRECT_URI=your-direct-uri
+
     let mut oauth = SpotifyOAuth::default()
         .scope("playlist-modify-private playlist-modify-public")
         .build();
 
-    match get_token(&mut oauth) {
+    let spot = match get_token(&mut oauth) {
         Some(token_info) => {
             let client_credential = SpotifyClientCredentials::default()
                 .token_info(token_info)
                 .build();
 
-            let spotify = Spotify::default()
+            Spotify::default()
                 .client_credentials_manager(client_credential)
-                .build();
-
-            let user_id = "KZ-2BPJ0Tum-W8n2kB5d8A";
-            let mut playlist_id = String::from("4Qghjo06iuI9rhqtzE4Ved?si=QJhqsgPxSwybqYVWEBvRQg");
-            let playlist = spotify
-                .user_playlist(user_id, Some(&mut playlist_id), None, None)
-                .unwrap();
-            log::info!("Found playlist {:?}", playlist);
-            // spotify.user_playlist_add_tracks(user_id, playlist_id: &str, track_ids: &[String], position: Option<i32>)
+                .build()
         }
         None => panic!("Spotify auth failed"),
     };
+
+    spot
+}
+
+///
+/// Find the spotify track IDS for each TimelineItem
+///
+fn find_tracks_ids(spotify: &Spotify, items: Vec<fip_client::TimelineItem>) -> Vec<String> {
+    let mut ids: Vec<String> = vec![];
+    for t in &items {
+        let q = format!("track:{} album:{}", &t.subtitle, &t.album);
+        log::debug!("Searching for track: {:?} with query {}", t, q);
+        let track = spotify.search_track(&q, 1, 0, None).unwrap();
+        log::debug!("Search result: {:?}", track);
+        for f in &track.tracks.items.first() {
+            for id in &f.id {
+                ids.push(id.clone());
+            }
+        }
+    }
+    ids
+}
+
+fn update_playlist(spotify: &Spotify, tracks: Vec<String>) {
+    log::info!("Updating playlist with tracks: {:?}", tracks);
+
+    let user_id = "KZ-2BPJ0Tum-W8n2kB5d8A";
+    let mut playlist_id = String::from("4Qghjo06iuI9rhqtzE4Ved?si=QJhqsgPxSwybqYVWEBvRQg");
+    let playlist = spotify
+        .user_playlist(user_id, Some(&mut playlist_id), None, None)
+        .unwrap();
+
+    log::debug!("Found playlist {:?}", playlist);
+
+    spotify
+        .user_playlist_add_tracks(user_id, playlist_id.as_str(), tracks.as_slice(), None)
+        .unwrap();
 }
 
 fn main() {
     env_logger::init();
-    // let oneh = 60 * 60; // 1 hour
-    // let d = Duration::from_secs(oneh * 10);
-    // let songs = fetch_last_songs(d);
-    update_playlist();
-    // for s in &songs {
-    //     println!("{:?}", *s);
-    // }
+    let oneh = 60 * 60; // 1 hour
+    let d = Duration::from_secs(oneh * 1);
+    let mut songs = fetch_last_songs(d);
+    songs.truncate(10);
+    let spotify = spotify_create_client();
+    let tracks = find_tracks_ids(&spotify, songs);
+    update_playlist(&spotify, tracks);
 }
