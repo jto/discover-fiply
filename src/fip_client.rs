@@ -44,10 +44,28 @@ fn go_down(value: &Value) -> Option<(Value, Value)> {
 // TODO: proper error
 fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
   let (edges, info) = go_down(&value).map_or(Err(()), |v| Ok(v))?;
-  let es: Vec<TimeLineItemEdge> = serde_json::from_value(edges).map_err(|e| {
-    log::error!("Got error {:?} while parsing edges", e);
-    ()
-  })?;
+  let mut es: Vec<TimeLineItemEdge> = vec![];
+  let edges_iter: Vec<&Value> = edges
+    .as_array()
+    .iter()
+    .flat_map(|vs| vs.into_iter())
+    .collect();
+  for a in edges_iter {
+    let item = serde_json::from_value(a.clone());
+    match item {
+      Ok(i) => es.push(i),
+      Err(e) =>
+      // ignore invalid nodes
+      {
+        log::error!(
+          "Got error {:?} while parsing edge:\n {}",
+          e,
+          serde_json::to_string_pretty(&a).unwrap()
+        )
+      }
+    }
+  }
+
   let page_info: PageInfo = serde_json::from_value(info).map_err(|e| {
     log::error!("Could not parse page_info. {:?}", e);
     ()

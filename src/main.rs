@@ -5,17 +5,22 @@ use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
 use rspotify::spotify::util::get_token;
 use std::time::{Duration, SystemTime};
 
+use retry::{delay, retry};
+
 pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
     let from = SystemTime::now();
     let mut current = from.duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let until = current - dur;
     let mut res: Vec<TimelineItem> = Vec::new();
-    let max_pages = 2;
+    let max_pages = 100;
     let mut itrs = 0;
     loop {
         let t = SystemTime::UNIX_EPOCH + current;
         log::info!("Fetching page {} of logs at time {:?}", itrs, t);
-        let (mut ss, page) = fip_client::fetch_songs(t).unwrap();
+        let fip_call = retry(delay::Fixed::from_millis(100).take(3), || {
+            fip_client::fetch_songs(t)
+        });
+        let (mut ss, page) = fip_call.unwrap();
         log::info!("Fetched {} elements. Page info is {:?}", ss.len(), page);
         res.append(ss.as_mut());
         let end_string = String::from_utf8(base64::decode(&page.end_cursor).unwrap()).unwrap();
@@ -42,6 +47,10 @@ pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
 /// Popularity is the number of time occurs in {songs}
 ///
 fn get_most_popular(songs: &mut Vec<TimelineItem>, limit: usize) -> Vec<TimelineItem> {
+    log::info!(
+        "Getting the most popular songs in a list of {}",
+        songs.len()
+    );
     songs.sort_by(|a, b| a.subtitle.cmp(&b.subtitle));
     let mut counted: Vec<(TimelineItem, u16)> = vec![];
     let mut last_seen = songs.pop().unwrap();
@@ -91,7 +100,11 @@ fn spotify_create_client() -> Spotify {
 fn find_tracks_ids(spotify: &Spotify, items: Vec<TimelineItem>) -> Vec<String> {
     let mut ids: Vec<String> = vec![];
     for t in &items {
-        let q = format!("track:{} album:{}", &t.subtitle, &t.album);
+        let q = format!(
+            "track:{} artist:{}",
+            &t.subtitle,
+            &t.interpreters.first().unwrap()
+        );
         log::debug!("Searching for track: {:?} with query {}", t, q);
         let track = spotify.search_track(&q, 1, 0, None).unwrap();
         log::debug!("Search result: {:?}", track);
@@ -125,8 +138,11 @@ fn main() {
     let a_day = 60 * 60 * 24;
     let d = Duration::from_secs(a_day * 7);
     let mut songs = fetch_last_songs(d);
-    let populars = get_most_popular(songs.as_mut(), 100);
+    let populars = get_most_popular(songs.as_mut(), 125);
     let spotify = spotify_create_client();
-    let tracks = find_tracks_ids(&spotify, populars);
+    let tracks: Vec<String> = find_tracks_ids(&spotify, populars)
+        .into_iter()
+        .take(100)
+        .collect();
     update_playlist(&spotify, tracks);
 }
