@@ -5,11 +5,11 @@ use std::time::SystemTime;
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TimelineItem {
-  album: String,
-  subtitle: String,
-  interpreters: Vec<String>,
-  year: Option<u16>,
-  start_time: u32,
+  pub album: String,
+  pub subtitle: String,
+  pub interpreters: Vec<String>,
+  pub year: Option<u16>,
+  pub start_time: u32,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -20,9 +20,9 @@ struct TimeLineItemEdge {
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct PageInfo {
   #[serde(rename = "endCursor")]
-  end_cursor: String,
+  pub end_cursor: String,
   #[serde(rename = "hasNextPage")]
-  has_next_page: bool,
+  pub has_next_page: bool,
 }
 
 const FIP_URI: &'static str = "https://www.fip.fr/latest/api/graphql";
@@ -45,11 +45,11 @@ fn go_down(value: &Value) -> Option<(Value, Value)> {
 fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
   let (edges, info) = go_down(&value).map_or(Err(()), |v| Ok(v))?;
   let es: Vec<TimeLineItemEdge> = serde_json::from_value(edges).map_err(|e| {
-    log::error!(target: "Fip client", "Got error {:?} while parsing edges", e);
+    log::error!("Got error {:?} while parsing edges", e);
     ()
   })?;
   let page_info: PageInfo = serde_json::from_value(info).map_err(|e| {
-    log::error!(target: "Fip client", "Could not parse page_info. {:?}", e);
+    log::error!("Could not parse page_info. {:?}", e);
     ()
   })?;
   Ok((es.into_iter().map(|e| e.node).collect(), page_info))
@@ -97,19 +97,24 @@ fn build_query(time: SystemTime) -> reqwest::RequestBuilder {
 // TODO: return proper error
 // TODO: check status code
 pub fn fetch_songs(time: SystemTime) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
+  log::info!("fethcing song at date {:?}", time);
+
   let resp = build_query(time)
     .send()
     .map_err(|e| {
-      log::error!(target: "Fip client", "Got error {:?} from Http client", e);
+      log::error!("Got error {:?} from Http client", e);
       ()
     })?
     .json()
     .map(|j| {
-      log::debug!(target: "Fip client", "FIP Json bofy: {}", serde_json::to_string_pretty(&j).unwrap());
+      log::debug!(
+        "FIP Json bofy: {}",
+        serde_json::to_string_pretty(&j).unwrap()
+      );
       j
     })
     .map_err(|e| {
-      log::error!(target: "Fip client", "Got error {:?} while parsing Json", e);
+      log::error!("Got error {:?} while parsing Json", e);
       ()
     })?;
   parse_songs(resp)
