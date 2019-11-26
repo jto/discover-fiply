@@ -7,7 +7,10 @@ use std::time::{Duration, SystemTime};
 
 use retry::{delay, retry};
 
-pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
+const USER_ID: &str = "KZ-2BPJ0Tum-W8n2kB5d8A";
+const DISCOVER_FIPLY_PLAYLIST: &str = "4Qghjo06iuI9rhqtzE4Ved";
+
+pub fn fetch_last_songs(dur: Duration, delay: Duration) -> Vec<TimelineItem> {
     let from = SystemTime::now();
     let mut current = from.duration_since(SystemTime::UNIX_EPOCH).unwrap();
     let until = current - dur;
@@ -18,7 +21,10 @@ pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
         let t = SystemTime::UNIX_EPOCH + current;
         log::info!("Fetching page {} of logs at time {:?}", itrs, t);
         let fip_call = retry(delay::Fixed::from_millis(100).take(3), || {
-            fip_client::fetch_songs(t)
+            fip_client::fetch_songs(t).map_err(|e| {
+                log::warn!("Got an error while calling fip api: {:?}", e);
+                e
+            })
         });
         let (mut ss, page) = fip_call.unwrap();
         log::info!("Fetched {} elements. Page info is {:?}", ss.len(), page);
@@ -119,17 +125,15 @@ fn find_tracks_ids(spotify: &Spotify, items: Vec<TimelineItem>) -> Vec<String> {
 
 fn update_playlist(spotify: &Spotify, tracks: Vec<String>) {
     log::info!("Updating playlist with tracks: {:?}", tracks);
-
-    let user_id = "KZ-2BPJ0Tum-W8n2kB5d8A";
-    let mut playlist_id = String::from("4Qghjo06iuI9rhqtzE4Ved");
+    let mut playlist_id = String::from(DISCOVER_FIPLY_PLAYLIST);
     let playlist = spotify
-        .user_playlist(user_id, Some(&mut playlist_id), None, None)
+        .user_playlist(USER_ID, Some(&mut playlist_id), None, None)
         .unwrap();
 
     log::debug!("Found playlist {:?}", playlist);
 
     spotify
-        .user_playlist_replace_tracks(user_id, playlist_id.as_str(), tracks.as_slice())
+        .user_playlist_replace_tracks(USER_ID, playlist_id.as_str(), tracks.as_slice())
         .unwrap();
 }
 
@@ -137,7 +141,8 @@ fn main() {
     env_logger::init();
     let a_day = 60 * 60 * 24;
     let d = Duration::from_secs(a_day * 7);
-    let mut songs = fetch_last_songs(d);
+    let delay = Duration::from_millis(500);
+    let mut songs = fetch_last_songs(d, delay);
     let populars = get_most_popular(songs.as_mut(), 125);
     let spotify = spotify_create_client();
     let tracks: Vec<String> = find_tracks_ids(&spotify, populars)

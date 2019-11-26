@@ -3,6 +3,13 @@ use serde_json::json;
 use serde_json::value::Value;
 use std::time::SystemTime;
 
+#[derive(Debug)]
+pub enum FipClientError {
+  JsonError(serde_json::error::Error),
+  WeirdFipJsonError,
+  FipError(reqwest::Error),
+}
+
 #[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct TimelineItem {
   pub album: String,
@@ -42,8 +49,8 @@ fn go_down(value: &Value) -> Option<(Value, Value)> {
 }
 
 // TODO: proper error
-fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
-  let (edges, info) = go_down(&value).map_or(Err(()), |v| Ok(v))?;
+fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), FipClientError> {
+  let (edges, info) = go_down(&value).map_or(Err(FipClientError::WeirdFipJsonError), |v| Ok(v))?;
   let mut es: Vec<TimeLineItemEdge> = vec![];
   let edges_iter: Vec<&Value> = edges
     .as_array()
@@ -57,7 +64,7 @@ fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
       Err(e) =>
       // ignore invalid nodes
       {
-        log::error!(
+        log::warn!(
           "Got error {:?} while parsing edge:\n {}",
           e,
           serde_json::to_string_pretty(&a).unwrap()
@@ -68,7 +75,7 @@ fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
 
   let page_info: PageInfo = serde_json::from_value(info).map_err(|e| {
     log::error!("Could not parse page_info. {:?}", e);
-    ()
+    FipClientError::JsonError(e)
   })?;
   Ok((es.into_iter().map(|e| e.node).collect(), page_info))
 }
@@ -114,26 +121,26 @@ fn build_query(time: SystemTime) -> reqwest::RequestBuilder {
 ///
 // TODO: return proper error
 // TODO: check status code
-pub fn fetch_songs(time: SystemTime) -> Result<(Vec<TimelineItem>, PageInfo), ()> {
+pub fn fetch_songs(time: SystemTime) -> Result<(Vec<TimelineItem>, PageInfo), FipClientError> {
   log::info!("fethcing song at date {:?}", time);
 
   let resp = build_query(time)
     .send()
     .map_err(|e| {
       log::error!("Got error {:?} from Http client", e);
-      ()
+      FipClientError::FipError(e)
     })?
     .json()
     .map(|j| {
       log::debug!(
-        "FIP Json bofy: {}",
+        "FIP Json body: {}",
         serde_json::to_string_pretty(&j).unwrap()
       );
       j
     })
     .map_err(|e| {
-      log::error!("Got error {:?} while parsing Json", e);
-      ()
+      log::error!("Got error {:?} while getting Json body", e);
+      FipClientError::FipError(e)
     })?;
   parse_songs(resp)
 }
