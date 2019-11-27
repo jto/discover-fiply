@@ -48,7 +48,6 @@ fn go_down(value: &Value) -> Option<(Value, Value)> {
   Some(((*edges).clone(), (*page_info).clone()))
 }
 
-// TODO: proper error
 fn parse_songs(value: Value) -> Result<(Vec<TimelineItem>, PageInfo), FipClientError> {
   let (edges, info) = go_down(&value).map_or(Err(FipClientError::WeirdFipJsonError), |v| Ok(v))?;
   let mut es: Vec<TimeLineItemEdge> = vec![];
@@ -110,7 +109,6 @@ fn build_query(time: SystemTime) -> reqwest::RequestBuilder {
     ("extensions", &extensions),
   ];
 
-  // TODO: could use be async
   let client = reqwest::Client::new();
   client.get(FIP_URI).query(&params)
 }
@@ -119,7 +117,6 @@ fn build_query(time: SystemTime) -> reqwest::RequestBuilder {
 /// Fetch the songs played _before_ the given time using the FIP API.
 /// Note: the API call was reversed engineered from their website.
 ///
-// TODO: return proper error
 // TODO: check status code
 pub fn fetch_songs(time: SystemTime) -> Result<(Vec<TimelineItem>, PageInfo), FipClientError> {
   log::info!("fethcing song at date {:?}", time);
