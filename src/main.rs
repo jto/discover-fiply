@@ -1,5 +1,7 @@
 pub mod fip_client;
+
 use fip_client::TimelineItem;
+use indicatif::{ProgressBar, ProgressStyle};
 use rspotify::spotify::client::Spotify;
 use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
 use rspotify::spotify::util::get_token;
@@ -17,6 +19,12 @@ struct TrackMetadata {
     fip_occ: u8,
 }
 
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::default_spinner()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+        .template("   {spinner} {wide_msg}")
+}
+
 pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
     let from = SystemTime::now();
     let mut current = from.duration_since(SystemTime::UNIX_EPOCH).unwrap();
@@ -24,15 +32,31 @@ pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
     let mut res: Vec<TimelineItem> = Vec::new();
     let max_pages = 100;
     let mut itrs = 0;
+
+    println!("🥁 Getting songs from FIP...");
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(spinner_style());
+
     loop {
         let t = SystemTime::UNIX_EPOCH + current;
+
         log::info!("Fetching page {} of logs at time {:?}", itrs, t);
+
+        spinner.set_message(&format!(
+            "Fetching page {} of songs starting at {}",
+            itrs,
+            humantime::format_rfc3339(t)
+        ));
+        spinner.inc(1);
+
         let fip_call = retry(delay::Fixed::from_millis(100).take(3), || {
             fip_client::fetch_songs(t).map_err(|e| {
                 log::warn!("Got an error while calling fip api: {:?}", e);
                 e
             })
         });
+
         let (mut ss, page) = fip_call.unwrap();
         log::info!("Fetched {} elements. Page info is {:?}", ss.len(), page);
         res.append(ss.as_mut());
@@ -52,6 +76,7 @@ pub fn fetch_last_songs(dur: Duration) -> Vec<TimelineItem> {
         }
         itrs = itrs + 1;
     }
+    spinner.finish_with_message("Done.");
     res
 }
 
@@ -107,16 +132,27 @@ fn find_tracks_metadata(
     items: Vec<(TimelineItem, u8)>,
     delay: &Duration,
 ) -> Vec<(TimelineItem, TrackMetadata)> {
-    let mut metas: Vec<(TimelineItem, TrackMetadata)> = vec![];
+    println!("✨ Getting songs metadata from Spotify...");
+    let bar = ProgressBar::new(items.len() as u64);
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("   {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] ({eta})")
+            .progress_chars("#>-"),
+    );
 
-    for (t, c) in &items {
-        let q = format!(
-            "track:{} artist:{}",
-            &t.subtitle,
-            &t.interpreters.first().unwrap()
-        );
+    let mut metas: Vec<(TimelineItem, TrackMetadata)> = vec![];
+    for (t, c) in items.iter() {
+        let inter;
+        match &t.interpreters.first() {
+            Some(i) => inter = i.clone(),
+            _ => continue,
+        }
+        let q = format!("track:{} artist:{}", &t.subtitle, inter);
         log::debug!("Searching for track: {:?} with query {}", t, q);
-        let track = spotify.search_track(&q, 1, 0, None).unwrap();
+        let track = retry(delay::Fixed::from_millis(100).take(3), || {
+            spotify.search_track(&q, 1, 0, None)
+        })
+        .unwrap();
         log::debug!("Search result: {:?}", track);
 
         for f in &track.tracks.items.first() {
@@ -129,8 +165,10 @@ fn find_tracks_metadata(
                 metas.push((t.clone(), m));
             }
         }
+        bar.inc(1);
         std::thread::sleep(*delay); // avoid the spotify API rate limit
     }
+    bar.finish_with_message("Done.");
     metas
 }
 
@@ -140,27 +178,41 @@ fn update_playlist(spotify: &Spotify, playlist_id: &mut String, tracks: Vec<Stri
         playlist_id,
         tracks
     );
-    let playlist = spotify
-        .user_playlist(USER_ID, Some(playlist_id), None, None)
-        .unwrap();
-
-    log::debug!("Found playlist {:?}", playlist);
 
     spotify
         .user_playlist_replace_tracks(USER_ID, playlist_id.as_str(), tracks.as_slice())
         .unwrap();
 }
 
+// TODO: Add progress bar ? https://docs.rs/indicatif/0.13.0/indicatif/
+// TODO: Command line arguments
 fn main() {
     env_logger::init();
+
     let a_day = 60 * 60 * 24;
     let d = Duration::from_secs(a_day * 7);
-    let delay = Duration::from_millis(200);
+    let delay = Duration::from_millis(100);
     let mut songs = fetch_last_songs(d);
     let counted = count_occurences(songs.as_mut());
     let spotify = spotify_create_client();
-    let mut popular_tracks_meta =
-        find_tracks_metadata(&spotify, counted.into_iter().take(150).collect(), &delay);
+
+    // Get playlist info to check if we can access the Spotify API
+    spotify
+        .user_playlist(
+            USER_ID,
+            Some(&mut String::from(DISCOVER_FIPLY_PLAYLIST)),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let occ_limit = counted[149].1;
+    let most_played: Vec<(TimelineItem, u8)> = counted
+        .into_iter()
+        .take_while(|t| t.1 >= occ_limit)
+        .collect();
+
+    let mut popular_tracks_meta = find_tracks_metadata(&spotify, most_played, &delay);
 
     popular_tracks_meta.sort_by_key(|i| (i.1.fip_occ, i.1.spotify_popularity));
 
@@ -170,9 +222,11 @@ fn main() {
         .map(|i| i.1.spotify_id)
         .collect();
 
+    println!("🚀 Creating Discover FIPly playlist");
     update_playlist(
         &spotify,
         &mut String::from(DISCOVER_FIPLY_PLAYLIST),
         most_aired_tracks_ids,
     );
+    println!("🎉 Playlist created successfully");
 }
